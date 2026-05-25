@@ -377,6 +377,12 @@ def main():
     parser.add_argument("--chunk_size", type=int, default=50, help="Latent T steps per saved training chunk; <=0 keeps full utterances.")
     parser.add_argument("--chunk_hop", type=int, default=50, help="Hop in latent T steps between chunks.")
     parser.add_argument("--min_chunk_len", type=int, default=25, help="Drop chunks shorter than this many latent T steps.")
+    parser.add_argument(
+        "--chunk_storage",
+        choices=["separate", "indexed"],
+        default="separate",
+        help="separate saves one .pt per chunk; indexed saves only full feats and stores chunk offsets in manifest.",
+    )
     parser.add_argument("--audio_exts", nargs="*", default=sorted(SUPPORTED_AUDIO_EXTS))
     parser.add_argument("--max_audio_files", type=int, default=0, help="Limit the number of source audio files; 0 means all.")
     parser.add_argument("--shuffle_audio_files", action="store_true", help="Shuffle source audio files before applying max_audio_files.")
@@ -531,7 +537,7 @@ def main():
 
             chunk_id = f"{item_id}_chunk{chunk_index:04d}"
             chunk_path = feats_dir / f"{chunk_id}.pt"
-            if not (args.skip_existing and chunk_path.exists()):
+            if args.chunk_storage == "separate" and not (args.skip_existing and chunk_path.exists()):
                 torch.save(
                     {
                         "audio_feats": chunk,
@@ -547,17 +553,20 @@ def main():
                     },
                     chunk_path,
                 )
+            audio_feats_path = chunk_path if args.chunk_storage == "separate" else full_feat_path
 
             out_row = {
                 "id": chunk_id,
                 "utterance_id": item_id,
                 "speaker_id": speaker_id,
                 "audio": str(wav_path),
-                "audio_feats": str(chunk_path),
+                "audio_feats": str(audio_feats_path),
+                "source_full_audio_feats": str(full_feat_path),
                 "length": int(chunk.size(0)),
                 "chunk_index": int(chunk_index),
                 "chunk_start": int(start),
                 "chunk_end": int(end),
+                "chunk_storage": args.chunk_storage,
             }
             if teacher is not None:
                 out_row["teacher_embedding"] = str(item["speaker_embedding"])

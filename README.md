@@ -59,7 +59,7 @@ defaults point to:
 - `dataset/train/wav/` for source audio.
 
 ```bash
-python prepare_student_dataset.py --skip_existing --chunk_size 50 --chunk_hop 50
+python prepare_student_dataset.py --skip_existing --chunk_size 50 --chunk_hop 50 --chunk_storage indexed
 ```
 
 For the flat momo 5000h wav directory, where filenames look like
@@ -76,6 +76,7 @@ python prepare_student_dataset.py \
   --chunk_size 50 \
   --chunk_hop 50 \
   --min_chunk_len 25 \
+  --chunk_storage indexed \
   --skip_existing
 ```
 
@@ -91,6 +92,7 @@ python prepare_student_dataset.py \
   --chunk_size 50 \
   --chunk_hop 50 \
   --min_chunk_len 25 \
+  --chunk_storage indexed \
   --max_audio_files 200 \
   --shuffle_audio_files \
   --seed 1234 \
@@ -110,6 +112,7 @@ CUDA_VISIBLE_DEVICES=0 python prepare_student_dataset.py \
   --chunk_size 50 \
   --chunk_hop 50 \
   --min_chunk_len 25 \
+  --chunk_storage indexed \
   --num_shards 2 \
   --shard_index 0 \
   --sharded_manifest \
@@ -124,6 +127,7 @@ CUDA_VISIBLE_DEVICES=1 python prepare_student_dataset.py \
   --chunk_size 50 \
   --chunk_hop 50 \
   --min_chunk_len 25 \
+  --chunk_storage indexed \
   --num_shards 2 \
   --shard_index 1 \
   --sharded_manifest \
@@ -159,6 +163,7 @@ python prepare_student_dataset.py \
   --chunk_size 50 \
   --chunk_hop 50 \
   --min_chunk_len 25 \
+  --chunk_storage indexed \
   --skip_existing
 ```
 
@@ -172,6 +177,7 @@ python prepare_student_dataset.py \
   --chunk_size 50 \
   --chunk_hop 50 \
   --min_chunk_len 25 \
+  --chunk_storage indexed \
   --skip_existing
 ```
 

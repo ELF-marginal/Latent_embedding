@@ -50,6 +50,7 @@ def parse_args():
     parser.add_argument("--chunk_size", type=int, default=50)
     parser.add_argument("--chunk_hop", type=int, default=50)
     parser.add_argument("--min_chunk_len", type=int, default=25)
+    parser.add_argument("--chunk_storage", choices=["separate", "indexed"], default="indexed")
     parser.add_argument("--device", default="")
     parser.add_argument("--teacher_device", default="")
     parser.add_argument("--show_modelscope_warnings", action="store_true")
@@ -108,6 +109,8 @@ def main():
         str(args.chunk_hop),
         "--min_chunk_len",
         str(args.min_chunk_len),
+        "--chunk_storage",
+        args.chunk_storage,
         "--skip_existing",
     ]
     if args.num_shards > 1:

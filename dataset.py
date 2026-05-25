@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -48,12 +49,21 @@ def _load_embedding(value: Any, manifest_dir: Path) -> torch.Tensor:
 
 
 class LatentSpeakerDataset(Dataset):
-    def __init__(self, manifest: str | Path, min_len: int = 1, max_len: int = 0, random_crop: bool = True):
+    def __init__(
+        self,
+        manifest: str | Path,
+        min_len: int = 1,
+        max_len: int = 0,
+        random_crop: bool = True,
+        feat_cache_size: int = 0,
+    ):
         self.manifest = Path(manifest)
         self.manifest_dir = self.manifest.parent
         self.min_len = int(min_len)
         self.max_len = int(max_len)
         self.random_crop = bool(random_crop)
+        self.feat_cache_size = max(0, int(feat_cache_size))
+        self._feat_cache: OrderedDict[str, torch.Tensor] = OrderedDict()
 
         self.items = []
         with self.manifest.open("r", encoding="utf-8") as f:
@@ -67,10 +77,29 @@ class LatentSpeakerDataset(Dataset):
     def __len__(self) -> int:
         return len(self.items)
 
+    def _get_audio_feats(self, path: Path) -> torch.Tensor:
+        key = str(path)
+        if self.feat_cache_size > 0 and key in self._feat_cache:
+            feats = self._feat_cache.pop(key)
+            self._feat_cache[key] = feats
+            return feats
+
+        feats = _load_audio_feats(path)
+        if self.feat_cache_size > 0:
+            self._feat_cache[key] = feats
+            while len(self._feat_cache) > self.feat_cache_size:
+                self._feat_cache.popitem(last=False)
+        return feats
+
     def __getitem__(self, idx: int):
         item = self.items[idx]
         feats_path = _resolve_path(item["audio_feats"], self.manifest_dir)
-        feats = _load_audio_feats(feats_path)
+        feats = self._get_audio_feats(feats_path)
+
+        if "chunk_start" in item and "chunk_end" in item:
+            start = int(item["chunk_start"])
+            end = int(item["chunk_end"])
+            feats = feats[start:end]
 
         if feats.size(0) < self.min_len:
             raise ValueError(f"{feats_path} has only {feats.size(0)} frames; min_len={self.min_len}")

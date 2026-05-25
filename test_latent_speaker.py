@@ -41,6 +41,7 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--num_workers", type=int, default=2)
     parser.add_argument("--l2_weight", type=float, default=0.1)
+    parser.add_argument("--feat_cache_size", type=int, default=64)
     parser.add_argument("--out_json", default="test_data/test_results.json")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     return parser.parse_args()
@@ -51,7 +52,13 @@ def main():
     device = torch.device(args.device)
     model = load_model(Path(args.checkpoint), device)
 
-    dataset = LatentSpeakerDataset(args.manifest, min_len=1, max_len=0, random_crop=False)
+    dataset = LatentSpeakerDataset(
+        args.manifest,
+        min_len=1,
+        max_len=0,
+        random_crop=False,
+        feat_cache_size=args.feat_cache_size,
+    )
     loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -110,4 +117,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

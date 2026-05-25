@@ -23,6 +23,7 @@
     "weight_decay": 0.01,
     "max_len": 0,
     "min_len": 1,
+    "feat_cache_size": 64,
     "l2_weight": 0.1,
     "grad_clip": 1.0,
     "save_every_steps": 10000,

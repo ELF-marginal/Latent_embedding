@@ -116,6 +116,7 @@ def parse_args():
     parser.add_argument("--weight_decay", type=float, default=1e-2)
     parser.add_argument("--max_len", type=int, default=0, help="Random crop length in latent T steps; 0 disables crop.")
     parser.add_argument("--min_len", type=int, default=1)
+    parser.add_argument("--feat_cache_size", type=int, default=64, help="LRU cache size for full audio_feats tensors in Dataset.")
     parser.add_argument("--l2_weight", type=float, default=0.1)
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument("--save_every_steps", type=int, default=10000, help="Save a training checkpoint every N steps.")
@@ -139,7 +140,13 @@ def main():
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    train_ds = LatentSpeakerDataset(args.train_manifest, min_len=args.min_len, max_len=args.max_len, random_crop=True)
+    train_ds = LatentSpeakerDataset(
+        args.train_manifest,
+        min_len=args.min_len,
+        max_len=args.max_len,
+        random_crop=True,
+        feat_cache_size=args.feat_cache_size,
+    )
     train_loader = DataLoader(
         train_ds,
         batch_size=args.batch_size,
@@ -153,7 +160,13 @@ def main():
 
     val_loader = None
     if args.val_manifest:
-        val_ds = LatentSpeakerDataset(args.val_manifest, min_len=args.min_len, max_len=args.max_len, random_crop=False)
+        val_ds = LatentSpeakerDataset(
+            args.val_manifest,
+            min_len=args.min_len,
+            max_len=args.max_len,
+            random_crop=False,
+            feat_cache_size=args.feat_cache_size,
+        )
         val_loader = DataLoader(
             val_ds,
             batch_size=args.batch_size,
