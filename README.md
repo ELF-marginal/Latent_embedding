@@ -30,6 +30,9 @@ that teacher embedding space.
 - `train_latent_speaker.py`: trains the student model from precomputed latents
   and teacher embeddings.
 - `infer_embedding.py`: extracts a student embedding from one latent file.
+- `build_test_data.py`: builds a held-out `test_data/` directory on demand.
+- `test_latent_speaker.py`: evaluates a trained student checkpoint on a test
+  manifest.
 
 ## Expected Training Manifest
 
@@ -127,6 +130,29 @@ Resume from the latest training checkpoint:
 python train_latent_speaker.py ^
   --config configs/latent_speaker_default.json ^
   --resume latest
+```
+
+## Test
+
+Build a held-out 200-file test set. This creates `test_data/` only when run; if
+the directory already exists, pass `--overwrite` to replace it.
+
+```bash
+python build_test_data.py \
+  --wav_root /home/lqh/datasets/momo_5000h/audio \
+  --exclude_manifest train_data/momo_5000h_200_train.jsonl \
+  --num_audio 200 \
+  --seed 2026 \
+  --overwrite
+```
+
+Evaluate a model checkpoint:
+
+```bash
+python test_latent_speaker.py \
+  --checkpoint checkpoints/latent_spk_momo_5000h_200/best.pt \
+  --manifest test_data/test_manifest.jsonl \
+  --batch_size 32
 ```
 
 ## Later VoxCPM Integration Shape

@@ -27,6 +27,32 @@ from voxcpm.model import VoxCPM2Model, VoxCPMModel  # noqa: E402
 SUPPORTED_AUDIO_EXTS = {".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus"}
 
 
+class SuppressMessageFilter(logging.Filter):
+    def __init__(self, suppressed_substrings: tuple[str, ...]):
+        super().__init__()
+        self.suppressed_substrings = suppressed_substrings
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        return not any(text in message for text in self.suppressed_substrings)
+
+
+def quiet_modelscope_logging():
+    suppressed = ("The sample rate of audio is not 16000, resample it.",)
+    message_filter = SuppressMessageFilter(suppressed)
+    root_logger = logging.getLogger()
+    root_logger.addFilter(message_filter)
+    for handler in root_logger.handlers:
+        handler.addFilter(message_filter)
+
+    for name in ("modelscope", "modelscope.models", "modelscope.pipelines"):
+        logger = logging.getLogger(name)
+        logger.setLevel(logging.ERROR)
+        logger.addFilter(message_filter)
+        for handler in logger.handlers:
+            handler.addFilter(message_filter)
+
+
 def safe_name(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in value)
 
@@ -151,7 +177,7 @@ def find_embedding_in_object(obj: Any, expected_dim: int) -> Any | None:
 class ModelScopeERes2NetTeacher:
     def __init__(self, model_dir: Path, device: str, expected_dim: int = 512, quiet: bool = True):
         if quiet:
-            logging.getLogger("modelscope").setLevel(logging.ERROR)
+            quiet_modelscope_logging()
         from modelscope.pipelines import pipeline
         from modelscope.utils.constant import Tasks
 
@@ -162,6 +188,8 @@ class ModelScopeERes2NetTeacher:
             model=str(model_dir),
             device=modelscope_device,
         )
+        if quiet:
+            quiet_modelscope_logging()
 
     def extract(self, wav_path: Path) -> np.ndarray:
         wav = str(wav_path)
