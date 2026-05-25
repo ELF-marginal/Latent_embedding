@@ -157,8 +157,12 @@ class ModelScopeERes2NetTeacher:
     def extract(self, wav_path: Path) -> np.ndarray:
         wav = str(wav_path)
         attempts = []
+        errors = []
 
         for call in (
+            lambda: self.pipeline(wav, output_emb=True),
+            lambda: self.pipeline([wav], output_emb=True),
+            lambda: self.pipeline([wav, wav], output_emb=True),
             lambda: self.pipeline.preprocess(wav),
             lambda: self.pipeline(wav),
             lambda: self.pipeline([wav]),
@@ -166,8 +170,8 @@ class ModelScopeERes2NetTeacher:
         ):
             try:
                 attempts.append(call())
-            except Exception:
-                pass
+            except Exception as exc:
+                errors.append(f"{type(exc).__name__}: {exc}")
 
         if attempts:
             for obj in attempts:
@@ -178,12 +182,15 @@ class ModelScopeERes2NetTeacher:
         if hasattr(self.pipeline, "preprocess") and hasattr(self.pipeline, "forward"):
             try:
                 data = self.pipeline.preprocess(wav)
-                output = self.pipeline.forward(data)
-                found = find_embedding_in_object(output, self.expected_dim)
-                if found is not None:
-                    return normalize_embedding(found)
-            except Exception:
-                pass
+                for output in (
+                    self.pipeline.forward(data),
+                    self.pipeline.forward(data, output_emb=True),
+                ):
+                    found = find_embedding_in_object(output, self.expected_dim)
+                    if found is not None:
+                        return normalize_embedding(found)
+            except Exception as exc:
+                errors.append(f"forward {type(exc).__name__}: {exc}")
 
         model = getattr(self.pipeline, "model", None)
         if model is not None:
@@ -196,13 +203,21 @@ class ModelScopeERes2NetTeacher:
                     found = find_embedding_in_object(output, self.expected_dim)
                     if found is not None:
                         return normalize_embedding(found)
-                except Exception:
-                    continue
+                except Exception as exc:
+                    errors.append(f"{method_name} {type(exc).__name__}: {exc}")
+
+        debug = []
+        for obj in attempts[-3:]:
+            if isinstance(obj, dict):
+                debug.append(f"dict keys={list(obj.keys())}")
+            else:
+                debug.append(f"{type(obj).__name__}: {str(obj)[:300]}")
 
         raise RuntimeError(
             "Could not extract a 512-D embedding from the ModelScope ERes2Net pipeline. "
             "If your local ModelScope version only exposes verification scores, generate "
-            "teacher embeddings with 3D-Speaker's infer_sv.py and pass them through a manifest."
+            "teacher embeddings with 3D-Speaker's infer_sv.py and pass them through a manifest. "
+            f"Recent outputs: {debug}. Recent errors: {errors[-5:]}"
         )
 
 
