@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
+import random
 import re
 import sys
 from pathlib import Path
@@ -147,7 +149,9 @@ def find_embedding_in_object(obj: Any, expected_dim: int) -> Any | None:
 
 
 class ModelScopeERes2NetTeacher:
-    def __init__(self, model_dir: Path, device: str, expected_dim: int = 512):
+    def __init__(self, model_dir: Path, device: str, expected_dim: int = 512, quiet: bool = True):
+        if quiet:
+            logging.getLogger("modelscope").setLevel(logging.ERROR)
         from modelscope.pipelines import pipeline
         from modelscope.utils.constant import Tasks
 
@@ -346,9 +350,13 @@ def main():
     parser.add_argument("--chunk_hop", type=int, default=50, help="Hop in latent T steps between chunks.")
     parser.add_argument("--min_chunk_len", type=int, default=25, help="Drop chunks shorter than this many latent T steps.")
     parser.add_argument("--audio_exts", nargs="*", default=sorted(SUPPORTED_AUDIO_EXTS))
+    parser.add_argument("--max_audio_files", type=int, default=0, help="Limit the number of source audio files; 0 means all.")
+    parser.add_argument("--shuffle_audio_files", action="store_true", help="Shuffle source audio files before applying max_audio_files.")
+    parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--teacher_device", default="", help="Defaults to --device. Use 'cpu' if ModelScope rejects cuda.")
     parser.add_argument("--teacher_dim", type=int, default=512)
+    parser.add_argument("--show_modelscope_warnings", action="store_true", help="Show ModelScope warnings such as sample-rate resampling messages.")
     parser.add_argument("--skip_existing", action="store_true")
     parser.add_argument("--no_teacher", action="store_true", help="Only create audio_feats; useful for debugging AudioVAE.")
     args = parser.parse_args()
@@ -384,6 +392,12 @@ def main():
 
     if not rows:
         raise RuntimeError("No audio files found.")
+    if args.shuffle_audio_files:
+        rng = random.Random(args.seed)
+        rng.shuffle(rows)
+    if args.max_audio_files and args.max_audio_files > 0:
+        rows = rows[: args.max_audio_files]
+        print(f"Using {len(rows)} source audio files after max_audio_files={args.max_audio_files}")
 
     device = torch.device(args.device)
     voxcpm = load_voxcpm_model(voxcpm_path, device)
@@ -391,7 +405,12 @@ def main():
     teacher = None
     if not args.no_teacher:
         teacher_device = args.teacher_device or args.device
-        teacher = ModelScopeERes2NetTeacher(teacher_model, teacher_device, expected_dim=args.teacher_dim)
+        teacher = ModelScopeERes2NetTeacher(
+            teacher_model,
+            teacher_device,
+            expected_dim=args.teacher_dim,
+            quiet=not args.show_modelscope_warnings,
+        )
 
     items = []
     for row in rows:

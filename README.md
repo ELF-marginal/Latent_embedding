@@ -75,6 +75,24 @@ python prepare_student_dataset.py \
   --skip_existing
 ```
 
+For a quick randomized 200-file smoke run:
+
+```bash
+python prepare_student_dataset.py \
+  --wav_root /home/lqh/datasets/momo_5000h/audio \
+  --audio_exts .wav \
+  --speaker_id_regex '^(?P<speaker_id>.+)_[^_]+$' \
+  --out_root train_data/momo_5000h_200_cache \
+  --out_manifest train_data/momo_5000h_200_train.jsonl \
+  --chunk_size 50 \
+  --chunk_hop 50 \
+  --min_chunk_len 25 \
+  --max_audio_files 200 \
+  --shuffle_audio_files \
+  --seed 1234 \
+  --skip_existing
+```
+
 This writes:
 
 ```text
