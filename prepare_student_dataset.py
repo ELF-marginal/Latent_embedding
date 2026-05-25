@@ -24,6 +24,10 @@ from voxcpm.model import VoxCPM2Model, VoxCPMModel  # noqa: E402
 SUPPORTED_AUDIO_EXTS = {".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus"}
 
 
+def safe_name(value: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in value)
+
+
 def stable_id(path: Path, root: Path) -> str:
     try:
         rel = path.resolve().relative_to(root.resolve()).as_posix()
@@ -251,6 +255,21 @@ def resolve_audio_path(value: str, base_dir: Path) -> Path:
     return path if path.is_absolute() else base_dir / path
 
 
+def get_speaker_id(row: dict[str, Any], wav_path: Path) -> str:
+    speaker_id = row.get("speaker_id") or row.get("spk_id") or row.get("speaker")
+    return str(speaker_id) if speaker_id is not None else wav_path.parent.name
+
+
+def chunk_starts(length: int, chunk_size: int, chunk_hop: int) -> list[int]:
+    if chunk_size <= 0 or length <= chunk_size:
+        return [0]
+    starts = list(range(0, length - chunk_size + 1, max(1, chunk_hop)))
+    last_start = length - chunk_size
+    if starts[-1] != last_start:
+        starts.append(last_start)
+    return starts
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Prepare a student speaker-embedding dataset: wav -> VoxCPM audio_feats + ERes2Net teacher emb."
@@ -265,6 +284,9 @@ def main():
     parser.add_argument("--input_manifest", default="", help="Optional JSONL with an 'audio' field.")
     parser.add_argument("--out_root", default="train_data/student_cache")
     parser.add_argument("--out_manifest", default="train_data/student_train.jsonl")
+    parser.add_argument("--chunk_size", type=int, default=50, help="Latent T steps per saved training chunk; <=0 keeps full utterances.")
+    parser.add_argument("--chunk_hop", type=int, default=50, help="Hop in latent T steps between chunks.")
+    parser.add_argument("--min_chunk_len", type=int, default=25, help="Drop chunks shorter than this many latent T steps.")
     parser.add_argument("--audio_exts", nargs="*", default=sorted(SUPPORTED_AUDIO_EXTS))
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--teacher_device", default="", help="Defaults to --device. Use 'cpu' if ModelScope rejects cuda.")
@@ -281,9 +303,11 @@ def main():
     out_manifest = resolve_audio_path(args.out_manifest, script_dir)
 
     feats_dir = out_root / "audio_feats"
-    emb_dir = out_root / "teacher_embeddings"
+    utt_emb_dir = out_root / "utterance_teacher_embeddings"
+    spk_emb_dir = out_root / "speaker_embeddings"
     feats_dir.mkdir(parents=True, exist_ok=True)
-    emb_dir.mkdir(parents=True, exist_ok=True)
+    utt_emb_dir.mkdir(parents=True, exist_ok=True)
+    spk_emb_dir.mkdir(parents=True, exist_ok=True)
     out_manifest.parent.mkdir(parents=True, exist_ok=True)
 
     if args.input_manifest:
@@ -305,17 +329,60 @@ def main():
         teacher_device = args.teacher_device or args.device
         teacher = ModelScopeERes2NetTeacher(teacher_model, teacher_device, expected_dim=args.teacher_dim)
 
-    prepared = []
-    for index, row in enumerate(tqdm(rows, desc="Preparing student dataset")):
+    items = []
+    for row in rows:
         wav_path = resolve_audio_path(row["audio"], manifest_base)
         if not wav_path.exists():
             raise FileNotFoundError(wav_path)
-
         item_id = stable_id(wav_path, script_dir)
-        feat_path = feats_dir / f"{item_id}.pt"
-        emb_path = emb_dir / f"{item_id}.npy"
+        speaker_id = get_speaker_id(row, wav_path)
+        items.append(
+            {
+                "row": row,
+                "id": item_id,
+                "speaker_id": speaker_id,
+                "wav_path": wav_path,
+            }
+        )
 
-        if not (args.skip_existing and feat_path.exists()):
+    speaker_to_utt_embs: dict[str, list[np.ndarray]] = {}
+    if teacher is not None:
+        for item in tqdm(items, desc="Extracting utterance teacher embeddings"):
+            utt_emb_path = utt_emb_dir / f"{item['id']}.npy"
+            if args.skip_existing and utt_emb_path.exists():
+                emb = normalize_embedding(np.load(utt_emb_path))
+            else:
+                emb = teacher.extract(item["wav_path"])
+                np.save(utt_emb_path, emb)
+            item["utterance_teacher_embedding"] = utt_emb_path
+            speaker_to_utt_embs.setdefault(item["speaker_id"], []).append(emb)
+
+        for speaker_id, embeddings in tqdm(speaker_to_utt_embs.items(), desc="Building speaker centroids"):
+            spk_emb_path = spk_emb_dir / f"{safe_name(speaker_id)}.npy"
+            if args.skip_existing and spk_emb_path.exists():
+                speaker_emb = normalize_embedding(np.load(spk_emb_path))
+            else:
+                stacked = np.stack([normalize_embedding(emb) for emb in embeddings], axis=0)
+                speaker_emb = normalize_embedding(stacked.mean(axis=0))
+                np.save(spk_emb_path, speaker_emb)
+            for item in items:
+                if item["speaker_id"] == speaker_id:
+                    item["speaker_embedding"] = spk_emb_path
+
+    prepared = []
+    skipped_short = 0
+    for item in tqdm(items, desc="Encoding and chunking audio_feats"):
+        row = item["row"]
+        wav_path = item["wav_path"]
+        item_id = item["id"]
+        speaker_id = item["speaker_id"]
+
+        full_feat_path = feats_dir / f"{item_id}_full.pt"
+
+        if args.skip_existing and full_feat_path.exists():
+            full_obj = torch.load(full_feat_path, map_location="cpu", weights_only=False)
+            feats = full_obj["audio_feats"]
+        else:
             feats = encode_audio_feats(voxcpm, wav_path, device)
             torch.save(
                 {
@@ -325,33 +392,65 @@ def main():
                     "feat_dim": int(feats.size(-1)),
                     "length": int(feats.size(0)),
                 },
-                feat_path,
+                full_feat_path,
             )
 
-        if teacher is not None and not (args.skip_existing and emb_path.exists()):
-            emb = teacher.extract(wav_path)
-            np.save(emb_path, emb)
+        total_len = int(feats.size(0))
+        starts = chunk_starts(total_len, args.chunk_size, args.chunk_hop)
+        for chunk_index, start in enumerate(starts):
+            end = total_len if args.chunk_size <= 0 else min(total_len, start + args.chunk_size)
+            chunk = feats[start:end].contiguous()
+            if chunk.size(0) < args.min_chunk_len:
+                skipped_short += 1
+                continue
 
-        out_row = {
-            "id": item_id,
-            "audio": str(wav_path),
-            "audio_feats": str(feat_path),
-            "length": int(torch.load(feat_path, map_location="cpu", weights_only=False)["length"]),
-        }
-        if "speaker_id" in row:
-            out_row["speaker_id"] = row["speaker_id"]
-        if teacher is not None:
-            out_row["teacher_embedding"] = str(emb_path)
-        prepared.append(out_row)
+            chunk_id = f"{item_id}_chunk{chunk_index:04d}"
+            chunk_path = feats_dir / f"{chunk_id}.pt"
+            if not (args.skip_existing and chunk_path.exists()):
+                torch.save(
+                    {
+                        "audio_feats": chunk,
+                        "source_audio": str(wav_path),
+                        "source_full_audio_feats": str(full_feat_path),
+                        "speaker_id": speaker_id,
+                        "chunk_index": int(chunk_index),
+                        "chunk_start": int(start),
+                        "chunk_end": int(end),
+                        "patch_size": int(voxcpm.patch_size),
+                        "feat_dim": int(chunk.size(-1)),
+                        "length": int(chunk.size(0)),
+                    },
+                    chunk_path,
+                )
+
+            out_row = {
+                "id": chunk_id,
+                "utterance_id": item_id,
+                "speaker_id": speaker_id,
+                "audio": str(wav_path),
+                "audio_feats": str(chunk_path),
+                "length": int(chunk.size(0)),
+                "chunk_index": int(chunk_index),
+                "chunk_start": int(start),
+                "chunk_end": int(end),
+            }
+            if teacher is not None:
+                out_row["teacher_embedding"] = str(item["speaker_embedding"])
+                out_row["speaker_embedding"] = str(item["speaker_embedding"])
+                out_row["utterance_teacher_embedding"] = str(item["utterance_teacher_embedding"])
+            prepared.append(out_row)
 
     with out_manifest.open("w", encoding="utf-8") as f:
         for row in prepared:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     print(f"Wrote {len(prepared)} rows to {out_manifest}")
-    print(f"Audio feats: {feats_dir}")
+    if skipped_short:
+        print(f"Skipped {skipped_short} chunks shorter than min_chunk_len={args.min_chunk_len}")
+    print(f"Audio feat chunks: {feats_dir}")
     if teacher is not None:
-        print(f"Teacher embeddings: {emb_dir}")
+        print(f"Utterance teacher embeddings: {utt_emb_dir}")
+        print(f"Speaker centroid embeddings: {spk_emb_dir}")
 
 
 if __name__ == "__main__":

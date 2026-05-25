@@ -22,8 +22,9 @@ that teacher embedding space.
 - `models.py`: `LatentSpeakerEncoder`, suitable for later use as a frozen
   `loss_spk` network.
 - `prepare_student_dataset.py`: scans wav files and creates the full student
-  training dataset: VoxCPM AudioVAE `audio_feats` plus ERes2Net teacher
-  embeddings.
+  training dataset. It caches utterance-level ERes2Net embeddings, averages them
+  into one normalized centroid per speaker, and writes chunk-level VoxCPM
+  AudioVAE `audio_feats` supervised by that speaker centroid.
 - `precompute_audio_feats.py`: converts manifest audio into VoxCPM AudioVAE
   latent patch files.
 - `train_latent_speaker.py`: trains the student model from precomputed latents
@@ -32,16 +33,17 @@ that teacher embedding space.
 
 ## Expected Training Manifest
 
-After precomputing latents and teacher embeddings, train with a JSONL manifest:
+After precomputing latents and speaker centroids, train with a JSONL manifest.
+Each row is one latent chunk, not necessarily one full utterance:
 
 ```json
-{"audio_feats": "cache/000001_feats.pt", "teacher_embedding": "cache/000001_spk.npy"}
-{"audio_feats": "cache/000002_feats.pt", "teacher_embedding": [0.01, -0.02, 0.3]}
+{"id": "spk001_utt001_chunk0000", "speaker_id": "spk001", "audio_feats": "train_data/student_cache/audio_feats/spk001_utt001_chunk0000.pt", "teacher_embedding": "train_data/student_cache/speaker_embeddings/spk001.npy", "length": 100}
 ```
 
 `audio_feats` can be a `.pt` file containing either `[T, P, D]` directly or a
-dict with key `audio_feats`. `teacher_embedding` can be a list, `.npy`, `.pt`, or
-a dict `.pt` with key `embedding`.
+dict with key `audio_feats`. `teacher_embedding` points to the speaker-level
+centroid embedding: `normalize(mean(normalize(ERes2Net(wav_i))))` over all
+utterances for the same speaker.
 
 ## Train
 
@@ -53,14 +55,15 @@ defaults point to:
 - `dataset/train/wav/` for source audio.
 
 ```bash
-python prepare_student_dataset.py --skip_existing
+python prepare_student_dataset.py --skip_existing --chunk_size 50 --chunk_hop 50
 ```
 
 This writes:
 
 ```text
 train_data/student_cache/audio_feats/*.pt
-train_data/student_cache/teacher_embeddings/*.npy
+train_data/student_cache/utterance_teacher_embeddings/*.npy
+train_data/student_cache/speaker_embeddings/*.npy
 train_data/student_train.jsonl
 ```
 

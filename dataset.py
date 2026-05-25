@@ -84,7 +84,15 @@ class LatentSpeakerDataset(Dataset):
 
         emb = _load_embedding(item["teacher_embedding"], self.manifest_dir).flatten()
         emb = torch.nn.functional.normalize(emb, dim=0)
-        return {"audio_feats": feats, "teacher_embedding": emb, "length": feats.size(0)}
+        return {
+            "audio_feats": feats,
+            "teacher_embedding": emb,
+            "length": feats.size(0),
+            "id": item.get("id", str(idx)),
+            "speaker_id": item.get("speaker_id", ""),
+            "utterance_id": item.get("utterance_id", ""),
+            "chunk_index": item.get("chunk_index", -1),
+        }
 
 
 def collate_latent_speaker(batch):
@@ -102,5 +110,8 @@ def collate_latent_speaker(batch):
         "audio_feats": feats,
         "lengths": lengths,
         "teacher_embedding": embeddings,
+        "ids": [sample["id"] for sample in batch],
+        "speaker_ids": [sample["speaker_id"] for sample in batch],
+        "utterance_ids": [sample["utterance_id"] for sample in batch],
+        "chunk_indices": torch.tensor([sample["chunk_index"] for sample in batch], dtype=torch.long),
     }
-
