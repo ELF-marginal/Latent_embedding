@@ -116,8 +116,8 @@ def parse_args():
     parser.add_argument("--min_len", type=int, default=1)
     parser.add_argument("--l2_weight", type=float, default=0.1)
     parser.add_argument("--grad_clip", type=float, default=1.0)
-    parser.add_argument("--save_every_steps", type=int, default=0, help="Save a training checkpoint every N steps.")
-    parser.add_argument("--save_every_epochs", type=int, default=1, help="Save a training checkpoint every N epochs.")
+    parser.add_argument("--save_every_steps", type=int, default=10000, help="Save a training checkpoint every N steps.")
+    parser.add_argument("--save_every_epochs", type=int, default=0, help="Save a training checkpoint every N epochs; 0 disables epoch checkpoints.")
     parser.add_argument("--resume", default="", help="Path to a training checkpoint. Use 'latest' to resume from save_dir/latest_train.pt.")
     parser.add_argument("--no_auto_resume", action="store_true", help="Do not auto-resume from save_dir/latest_train.pt.")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -253,7 +253,6 @@ def main():
             print(f"[val] epoch={epoch + 1} loss={val_metrics['loss']:.6f} cosine={val_metrics['cosine']:.6f}")
             if val_metrics["loss"] < best_val:
                 best_val = val_metrics["loss"]
-                model.save_checkpoint(save_dir / "best.pt")
 
         model.save_checkpoint(save_dir / "latest.pt")
         if args.save_every_epochs > 0 and (epoch + 1) % args.save_every_epochs == 0:

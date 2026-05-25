@@ -352,7 +352,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Prepare a student speaker-embedding dataset: wav -> VoxCPM audio_feats + ERes2Net teacher emb."
     )
-    parser.add_argument("--voxcpm_path", default="VoxCPM2", help="Local VoxCPM checkpoint directory.")
+    parser.add_argument("--voxcpm_path", default="VoxCPMv1.5", help="Local VoxCPM checkpoint directory.")
     parser.add_argument(
         "--teacher_model",
         default="speech_eres2net_large_sv_zh-cn_3dspeaker_16k",

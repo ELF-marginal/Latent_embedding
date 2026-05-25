@@ -43,7 +43,7 @@ def parse_args():
     parser.add_argument("--out_dir", default="test_data")
     parser.add_argument("--overwrite", action="store_true")
 
-    parser.add_argument("--voxcpm_path", default="VoxCPM2")
+    parser.add_argument("--voxcpm_path", default="VoxCPMv1.5")
     parser.add_argument("--teacher_model", default="speech_eres2net_large_sv_zh-cn_3dspeaker_16k")
     parser.add_argument("--speaker_id_regex", default=r"^(?P<speaker_id>.+)_[^_]+$")
     parser.add_argument("--audio_exts", nargs="*", default=[".wav"])
@@ -130,4 +130,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

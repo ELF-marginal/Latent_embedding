@@ -53,7 +53,7 @@ utterances for the same speaker.
 First prepare the student dataset. With the current local folder layout, the
 defaults point to:
 
-- `VoxCPM2/` for the VoxCPM AudioVAE.
+- `VoxCPMv1.5/` for the VoxCPM AudioVAE.
 - `speech_eres2net_large_sv_zh-cn_3dspeaker_16k/` for the ERes2Net teacher.
 - `dataset/train/wav/` for source audio.
 
@@ -150,7 +150,7 @@ Evaluate a model checkpoint:
 
 ```bash
 python test_latent_speaker.py \
-  --checkpoint checkpoints/latent_spk_momo_5000h_200/best.pt \
+  --checkpoint checkpoints/latent_spk_momo_5000h_200/latest.pt \
   --manifest test_data/test_manifest.jsonl \
   --batch_size 32
 ```
