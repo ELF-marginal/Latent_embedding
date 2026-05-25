@@ -96,6 +96,43 @@ python prepare_student_dataset.py \
   --skip_existing
 ```
 
+For two-GPU sharded data preparation, run one process per GPU and merge the
+shard manifests afterwards:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python prepare_student_dataset.py \
+  --wav_root /home/lqh/datasets/momo_5000h/audio \
+  --audio_exts .wav \
+  --speaker_id_regex '^(?P<speaker_id>.+)_[^_]+$' \
+  --out_root train_data/momo_5000h_cache \
+  --out_manifest train_data/momo_5000h_train.jsonl \
+  --chunk_size 50 \
+  --chunk_hop 50 \
+  --min_chunk_len 25 \
+  --num_shards 2 \
+  --shard_index 0 \
+  --sharded_manifest \
+  --skip_existing
+
+CUDA_VISIBLE_DEVICES=1 python prepare_student_dataset.py \
+  --wav_root /home/lqh/datasets/momo_5000h/audio \
+  --audio_exts .wav \
+  --speaker_id_regex '^(?P<speaker_id>.+)_[^_]+$' \
+  --out_root train_data/momo_5000h_cache \
+  --out_manifest train_data/momo_5000h_train.jsonl \
+  --chunk_size 50 \
+  --chunk_hop 50 \
+  --min_chunk_len 25 \
+  --num_shards 2 \
+  --shard_index 1 \
+  --sharded_manifest \
+  --skip_existing
+
+python merge_manifests.py \
+  --inputs 'train_data/momo_5000h_train.shard*-of-*.jsonl' \
+  --output train_data/momo_5000h_train.jsonl
+```
+
 This writes:
 
 ```text

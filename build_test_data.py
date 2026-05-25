@@ -53,6 +53,8 @@ def parse_args():
     parser.add_argument("--device", default="")
     parser.add_argument("--teacher_device", default="")
     parser.add_argument("--show_modelscope_warnings", action="store_true")
+    parser.add_argument("--num_shards", type=int, default=1)
+    parser.add_argument("--shard_index", type=int, default=0)
     return parser.parse_args()
 
 
@@ -108,6 +110,16 @@ def main():
         str(args.min_chunk_len),
         "--skip_existing",
     ]
+    if args.num_shards > 1:
+        prepare_args.extend(
+            [
+                "--num_shards",
+                str(args.num_shards),
+                "--shard_index",
+                str(args.shard_index),
+                "--sharded_manifest",
+            ]
+        )
     if args.device:
         prepare_args.extend(["--device", args.device])
     if args.teacher_device:

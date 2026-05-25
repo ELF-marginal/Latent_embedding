@@ -109,6 +109,8 @@ def parse_args():
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--num_workers", type=int, default=2)
+    parser.add_argument("--prefetch_factor", type=int, default=4)
+    parser.add_argument("--persistent_workers", action="store_true")
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-2)
@@ -145,6 +147,8 @@ def main():
         num_workers=args.num_workers,
         collate_fn=collate_latent_speaker,
         pin_memory=device.type == "cuda",
+        persistent_workers=args.persistent_workers and args.num_workers > 0,
+        prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
     )
 
     val_loader = None
@@ -157,6 +161,8 @@ def main():
             num_workers=args.num_workers,
             collate_fn=collate_latent_speaker,
             pin_memory=device.type == "cuda",
+            persistent_workers=args.persistent_workers and args.num_workers > 0,
+            prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
         )
 
     cfg = LatentSpeakerEncoderConfig(

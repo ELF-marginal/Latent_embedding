@@ -381,6 +381,9 @@ def main():
     parser.add_argument("--max_audio_files", type=int, default=0, help="Limit the number of source audio files; 0 means all.")
     parser.add_argument("--shuffle_audio_files", action="store_true", help="Shuffle source audio files before applying max_audio_files.")
     parser.add_argument("--seed", type=int, default=1234)
+    parser.add_argument("--num_shards", type=int, default=1, help="Split selected audio files into N shards for parallel data prep.")
+    parser.add_argument("--shard_index", type=int, default=0, help="Current shard index in [0, num_shards).")
+    parser.add_argument("--sharded_manifest", action="store_true", help="Write out_manifest with a .shard{idx}-of-{N}.jsonl suffix.")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--teacher_device", default="", help="Defaults to --device. Use 'cpu' if ModelScope rejects cuda.")
     parser.add_argument("--teacher_dim", type=int, default=512)
@@ -426,6 +429,17 @@ def main():
     if args.max_audio_files and args.max_audio_files > 0:
         rows = rows[: args.max_audio_files]
         print(f"Using {len(rows)} source audio files after max_audio_files={args.max_audio_files}")
+    if args.num_shards < 1:
+        raise ValueError("--num_shards must be >= 1")
+    if not 0 <= args.shard_index < args.num_shards:
+        raise ValueError("--shard_index must be in [0, num_shards)")
+    if args.num_shards > 1:
+        before = len(rows)
+        rows = rows[args.shard_index :: args.num_shards]
+        print(f"Using shard {args.shard_index}/{args.num_shards}: {len(rows)} of {before} source audio files")
+        if args.sharded_manifest:
+            suffix = f".shard{args.shard_index:05d}-of-{args.num_shards:05d}.jsonl"
+            out_manifest = out_manifest.with_suffix(suffix)
 
     device = torch.device(args.device)
     voxcpm = load_voxcpm_model(voxcpm_path, device)
