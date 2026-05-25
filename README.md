@@ -59,14 +59,14 @@ python prepare_student_dataset.py --skip_existing
 This writes:
 
 ```text
-dataset/train/student_cache/audio_feats/*.pt
-dataset/train/student_cache/teacher_embeddings/*.npy
-dataset/train/student_train.jsonl
+train_data/student_cache/audio_feats/*.pt
+train_data/student_cache/teacher_embeddings/*.npy
+train_data/student_train.jsonl
 ```
 
 ```bash
 python train_latent_speaker.py ^
-  --train_manifest dataset/train/student_train.jsonl ^
+  --train_manifest train_data/student_train.jsonl ^
   --save_dir checkpoints/latent_spk ^
   --embedding_dim 512
 ```
