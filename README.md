@@ -33,6 +33,7 @@ that teacher embedding space.
 - `build_test_data.py`: builds a held-out `test_data/` directory on demand.
 - `test_latent_speaker.py`: evaluates a trained student checkpoint on a test
   manifest.
+- `build_dataset_splits.py`: creates speaker-disjoint train/test audio splits.
 
 ## Expected Training Manifest
 
@@ -131,6 +132,47 @@ CUDA_VISIBLE_DEVICES=1 python prepare_student_dataset.py \
 python merge_manifests.py \
   --inputs 'train_data/momo_5000h_train.shard*-of-*.jsonl' \
   --output train_data/momo_5000h_train.jsonl
+```
+
+For a proper speaker-disjoint train/test split, first create audio split files:
+
+```bash
+python build_dataset_splits.py \
+  --wav_root /home/lqh/datasets/momo_5000h/audio \
+  --speaker_id_regex '^(?P<speaker_id>.+)_[^_]+$' \
+  --num_train_audio 5000 \
+  --num_test_audio 1000 \
+  --sample_strategy balanced \
+  --min_files_per_speaker 1 \
+  --out_dir splits/momo_5000h \
+  --seed 1234 \
+  --overwrite
+```
+
+Then build train features:
+
+```bash
+python prepare_student_dataset.py \
+  --input_manifest splits/momo_5000h/train_audio.jsonl \
+  --out_root train_data/momo_5000h_cache \
+  --out_manifest train_data/momo_5000h_train.jsonl \
+  --chunk_size 50 \
+  --chunk_hop 50 \
+  --min_chunk_len 25 \
+  --skip_existing
+```
+
+And build test features:
+
+```bash
+python prepare_student_dataset.py \
+  --input_manifest splits/momo_5000h/test_audio.jsonl \
+  --out_root test_data/momo_5000h_cache \
+  --out_manifest test_data/test_manifest.jsonl \
+  --chunk_size 50 \
+  --chunk_hop 50 \
+  --min_chunk_len 25 \
+  --skip_existing
 ```
 
 This writes:
