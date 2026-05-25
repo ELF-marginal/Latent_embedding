@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Iterable
@@ -238,13 +239,58 @@ def read_manifest_audio_paths(manifest: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def build_rows_from_wav_root(wav_root: Path, exts: Iterable[str]) -> list[dict[str, Any]]:
+def parse_speaker_id_from_path(wav_path: Path, wav_root: Path, speaker_id_regex: str, fallback: str) -> str:
+    if speaker_id_regex:
+        match = re.match(speaker_id_regex, wav_path.name)
+        if match is None:
+            match = re.match(speaker_id_regex, wav_path.stem)
+        if match is None:
+            raise ValueError(f"speaker_id_regex did not match filename: {wav_path.name}")
+        if "speaker_id" in match.groupdict():
+            return match.group("speaker_id")
+        return match.group(1)
+
+    if fallback == "parent":
+        return wav_path.parent.name
+    if fallback == "stem":
+        return wav_path.stem
+    if fallback == "prefix_before_last_underscore":
+        parts = wav_path.stem.rsplit("_", 1)
+        return parts[0] if len(parts) == 2 else wav_path.stem
+    if fallback == "relative_parent":
+        try:
+            rel_parent = wav_path.parent.relative_to(wav_root)
+            return rel_parent.as_posix() if str(rel_parent) != "." else wav_path.parent.name
+        except ValueError:
+            return wav_path.parent.name
+    raise ValueError(f"Unsupported speaker_id_fallback: {fallback}")
+
+
+def build_rows_from_wav_root(
+    wav_root: Path,
+    exts: Iterable[str],
+    *,
+    speaker_id_regex: str = "",
+    speaker_id_fallback: str = "parent",
+    recursive: bool = True,
+) -> list[dict[str, Any]]:
     rows = []
-    for wav_path in find_audio_files(wav_root, exts):
+    if recursive:
+        wav_paths = find_audio_files(wav_root, exts)
+    else:
+        ext_set = {ext.lower() if ext.startswith(".") else f".{ext.lower()}" for ext in exts}
+        wav_paths = sorted(p for p in wav_root.iterdir() if p.is_file() and p.suffix.lower() in ext_set)
+
+    for wav_path in wav_paths:
         rows.append(
             {
                 "audio": str(wav_path),
-                "speaker_id": wav_path.parent.name,
+                "speaker_id": parse_speaker_id_from_path(
+                    wav_path,
+                    wav_root,
+                    speaker_id_regex=speaker_id_regex,
+                    fallback=speaker_id_fallback,
+                ),
             }
         )
     return rows
@@ -282,6 +328,18 @@ def main():
     )
     parser.add_argument("--wav_root", default="dataset/train/wav", help="Directory scanned when --input_manifest is empty.")
     parser.add_argument("--input_manifest", default="", help="Optional JSONL with an 'audio' field.")
+    parser.add_argument(
+        "--speaker_id_regex",
+        default="",
+        help="Regex applied to filename/stem. Use a named group (?P<speaker_id>...) or the first capture group.",
+    )
+    parser.add_argument(
+        "--speaker_id_fallback",
+        default="parent",
+        choices=["parent", "stem", "prefix_before_last_underscore", "relative_parent"],
+        help="Fallback speaker-id rule when no regex is provided.",
+    )
+    parser.add_argument("--non_recursive", action="store_true", help="Only scan files directly under wav_root.")
     parser.add_argument("--out_root", default="train_data/student_cache")
     parser.add_argument("--out_manifest", default="train_data/student_train.jsonl")
     parser.add_argument("--chunk_size", type=int, default=50, help="Latent T steps per saved training chunk; <=0 keeps full utterances.")
@@ -315,7 +373,13 @@ def main():
         rows = read_manifest_audio_paths(input_manifest)
         manifest_base = input_manifest.parent
     else:
-        rows = build_rows_from_wav_root(wav_root, args.audio_exts)
+        rows = build_rows_from_wav_root(
+            wav_root,
+            args.audio_exts,
+            speaker_id_regex=args.speaker_id_regex,
+            speaker_id_fallback=args.speaker_id_fallback,
+            recursive=not args.non_recursive,
+        )
         manifest_base = script_dir
 
     if not rows:

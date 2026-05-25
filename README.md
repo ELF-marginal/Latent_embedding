@@ -58,6 +58,23 @@ defaults point to:
 python prepare_student_dataset.py --skip_existing --chunk_size 50 --chunk_hop 50
 ```
 
+For the flat momo 5000h wav directory, where filenames look like
+`00429834_Session_960956110_0_S1_c2b6ba0df049.wav` and the speaker id is
+`00429834_Session_960956110_0_S1`:
+
+```bash
+python prepare_student_dataset.py \
+  --wav_root /home/lqh/datasets/momo_5000h/audio \
+  --audio_exts .wav \
+  --speaker_id_regex '^(?P<speaker_id>.+)_[^_]+$' \
+  --out_root train_data/momo_5000h_cache \
+  --out_manifest train_data/momo_5000h_train.jsonl \
+  --chunk_size 50 \
+  --chunk_hop 50 \
+  --min_chunk_len 25 \
+  --skip_existing
+```
+
 This writes:
 
 ```text
@@ -69,6 +86,12 @@ train_data/student_train.jsonl
 
 ```bash
 python train_latent_speaker.py --config configs/latent_speaker_default.json
+```
+
+For the momo 5000h manifest:
+
+```bash
+python train_latent_speaker.py --config configs/latent_speaker_momo_5000h.json
 ```
 
 CLI arguments override config values:
