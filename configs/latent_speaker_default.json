@@ -1,0 +1,32 @@
+{
+  "data": {
+    "train_manifest": "train_data/student_train.jsonl",
+    "val_manifest": "",
+    "save_dir": "checkpoints/latent_spk"
+  },
+  "model": {
+    "patch_size": 4,
+    "feat_dim": 64,
+    "embedding_dim": 512,
+    "hidden_dim": 384,
+    "num_layers": 4,
+    "num_heads": 6,
+    "dropout": 0.1
+  },
+  "training": {
+    "batch_size": 16,
+    "num_workers": 2,
+    "epochs": 20,
+    "lr": 0.0002,
+    "weight_decay": 0.01,
+    "max_len": 200,
+    "min_len": 1,
+    "l2_weight": 0.1,
+    "grad_clip": 1.0,
+    "save_every_steps": 1000,
+    "save_every_epochs": 1,
+    "resume": "",
+    "no_auto_resume": false,
+    "device": "cuda"
+  }
+}

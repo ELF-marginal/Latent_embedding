@@ -65,10 +65,24 @@ train_data/student_train.jsonl
 ```
 
 ```bash
+python train_latent_speaker.py --config configs/latent_speaker_default.json
+```
+
+CLI arguments override config values:
+
+```bash
 python train_latent_speaker.py ^
-  --train_manifest train_data/student_train.jsonl ^
-  --save_dir checkpoints/latent_spk ^
-  --embedding_dim 512
+  --config configs/latent_speaker_default.json ^
+  --batch_size 32 ^
+  --epochs 50
+```
+
+Resume from the latest training checkpoint:
+
+```bash
+python train_latent_speaker.py ^
+  --config configs/latent_speaker_default.json ^
+  --resume latest
 ```
 
 ## Later VoxCPM Integration Shape

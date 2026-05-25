@@ -5,6 +5,7 @@ import argparse
 import json
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 import torch
 from torch.utils.data import DataLoader
@@ -12,6 +13,43 @@ from tqdm import tqdm
 
 from dataset import LatentSpeakerDataset, collate_latent_speaker
 from models import LatentSpeakerEncoder, LatentSpeakerEncoderConfig, speaker_embedding_loss
+
+
+def save_training_checkpoint(
+    path: Path,
+    *,
+    model: LatentSpeakerEncoder,
+    optimizer: torch.optim.Optimizer,
+    epoch: int,
+    global_step: int,
+    best_val: float,
+    config: LatentSpeakerEncoderConfig,
+    args,
+):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "model_config": asdict(config),
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "epoch": int(epoch),
+            "global_step": int(global_step),
+            "best_val": float(best_val),
+            "train_args": vars(args),
+        },
+        path,
+    )
+
+
+def load_training_checkpoint(path: Path, model: LatentSpeakerEncoder, optimizer: torch.optim.Optimizer, device):
+    ckpt = torch.load(path, map_location=device, weights_only=False)
+    model.load_state_dict(ckpt["model_state_dict"])
+    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+    return {
+        "epoch": int(ckpt.get("epoch", 0)),
+        "global_step": int(ckpt.get("global_step", 0)),
+        "best_val": float(ckpt.get("best_val", float("inf"))),
+    }
 
 
 def evaluate(model, loader, device, l2_weight: float):
@@ -34,14 +72,37 @@ def evaluate(model, loader, device, l2_weight: float):
     }
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--train_manifest", required=True)
+def load_json_config(path: str | Path) -> dict[str, Any]:
+    with Path(path).open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def flatten_config(config: dict[str, Any]) -> dict[str, Any]:
+    flat = {}
+    for key, value in config.items():
+        if isinstance(value, dict):
+            flat.update(value)
+        else:
+            flat[key] = value
+    return flat
+
+
+def parse_args():
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--config", default="", help="JSON config file. CLI arguments override config values.")
+    pre_args, remaining = pre_parser.parse_known_args()
+
+    defaults = {}
+    if pre_args.config:
+        defaults = flatten_config(load_json_config(pre_args.config))
+
+    parser = argparse.ArgumentParser(parents=[pre_parser])
+    parser.add_argument("--train_manifest", default="")
     parser.add_argument("--val_manifest", default="")
-    parser.add_argument("--save_dir", required=True)
+    parser.add_argument("--save_dir", default="checkpoints/latent_spk")
     parser.add_argument("--patch_size", type=int, default=4)
     parser.add_argument("--feat_dim", type=int, default=64)
-    parser.add_argument("--embedding_dim", type=int, default=192)
+    parser.add_argument("--embedding_dim", type=int, default=512)
     parser.add_argument("--hidden_dim", type=int, default=384)
     parser.add_argument("--num_layers", type=int, default=4)
     parser.add_argument("--num_heads", type=int, default=6)
@@ -55,8 +116,22 @@ def main():
     parser.add_argument("--min_len", type=int, default=1)
     parser.add_argument("--l2_weight", type=float, default=0.1)
     parser.add_argument("--grad_clip", type=float, default=1.0)
+    parser.add_argument("--save_every_steps", type=int, default=0, help="Save a training checkpoint every N steps.")
+    parser.add_argument("--save_every_epochs", type=int, default=1, help="Save a training checkpoint every N epochs.")
+    parser.add_argument("--resume", default="", help="Path to a training checkpoint. Use 'latest' to resume from save_dir/latest_train.pt.")
+    parser.add_argument("--no_auto_resume", action="store_true", help="Do not auto-resume from save_dir/latest_train.pt.")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    args = parser.parse_args()
+
+    parser.set_defaults(**defaults)
+    args = parser.parse_args(remaining)
+    args.config = pre_args.config
+    if not args.train_manifest:
+        parser.error("--train_manifest is required unless provided by --config")
+    return args
+
+
+def main():
+    args = parse_args()
 
     device = torch.device(args.device)
     save_dir = Path(args.save_dir)
@@ -97,10 +172,27 @@ def main():
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     best_val = float("inf")
+    start_epoch = 0
+    global_step = 0
     with (save_dir / "config.json").open("w", encoding="utf-8") as f:
         json.dump({"model": asdict(cfg), "train_args": vars(args)}, f, indent=2, ensure_ascii=False)
 
-    for epoch in range(args.epochs):
+    resume_path = None
+    if args.resume:
+        resume_path = save_dir / "latest_train.pt" if args.resume == "latest" else Path(args.resume)
+    elif not args.no_auto_resume and (save_dir / "latest_train.pt").exists():
+        resume_path = save_dir / "latest_train.pt"
+
+    if resume_path is not None:
+        if not resume_path.exists():
+            raise FileNotFoundError(f"Resume checkpoint not found: {resume_path}")
+        state = load_training_checkpoint(resume_path, model, optimizer, device)
+        start_epoch = state["epoch"]
+        global_step = state["global_step"]
+        best_val = state["best_val"]
+        print(f"[resume] loaded {resume_path} at epoch={start_epoch}, global_step={global_step}, best_val={best_val:.6f}")
+
+    for epoch in range(start_epoch, args.epochs):
         model.train()
         progress = tqdm(train_loader, desc=f"epoch {epoch + 1}/{args.epochs}")
         running = []
@@ -119,12 +211,35 @@ def main():
             if args.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
             optimizer.step()
+            global_step += 1
 
             with torch.no_grad():
                 cosine = torch.nn.functional.cosine_similarity(student, teacher, dim=-1).mean()
             running.append(loss.detach())
             running_cos.append(cosine.detach())
-            progress.set_postfix(loss=f"{loss.item():.4f}", cosine=f"{cosine.item():.4f}")
+            progress.set_postfix(step=global_step, loss=f"{loss.item():.4f}", cosine=f"{cosine.item():.4f}")
+
+            if args.save_every_steps > 0 and global_step % args.save_every_steps == 0:
+                save_training_checkpoint(
+                    save_dir / f"step_{global_step:08d}.pt",
+                    model=model,
+                    optimizer=optimizer,
+                    epoch=epoch,
+                    global_step=global_step,
+                    best_val=best_val,
+                    config=cfg,
+                    args=args,
+                )
+                save_training_checkpoint(
+                    save_dir / "latest_train.pt",
+                    model=model,
+                    optimizer=optimizer,
+                    epoch=epoch,
+                    global_step=global_step,
+                    best_val=best_val,
+                    config=cfg,
+                    args=args,
+                )
 
         train_metrics = {
             "loss": torch.stack(running).mean().item(),
@@ -141,10 +256,40 @@ def main():
                 model.save_checkpoint(save_dir / "best.pt")
 
         model.save_checkpoint(save_dir / "latest.pt")
+        if args.save_every_epochs > 0 and (epoch + 1) % args.save_every_epochs == 0:
+            save_training_checkpoint(
+                save_dir / f"epoch_{epoch + 1:04d}.pt",
+                model=model,
+                optimizer=optimizer,
+                epoch=epoch + 1,
+                global_step=global_step,
+                best_val=best_val,
+                config=cfg,
+                args=args,
+            )
+        save_training_checkpoint(
+            save_dir / "latest_train.pt",
+            model=model,
+            optimizer=optimizer,
+            epoch=epoch + 1,
+            global_step=global_step,
+            best_val=best_val,
+            config=cfg,
+            args=args,
+        )
         with (save_dir / "metrics.jsonl").open("a", encoding="utf-8") as f:
-            f.write(json.dumps({"epoch": epoch + 1, "train": train_metrics, "val": val_metrics}) + "\n")
+            f.write(
+                json.dumps(
+                    {
+                        "epoch": epoch + 1,
+                        "global_step": global_step,
+                        "train": train_metrics,
+                        "val": val_metrics,
+                    }
+                )
+                + "\n"
+            )
 
 
 if __name__ == "__main__":
     main()
-
