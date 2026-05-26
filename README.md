@@ -153,6 +153,39 @@ python build_dataset_splits.py \
   --overwrite
 ```
 
+To extend an existing 30k/5k split to 300k/50k while keeping old audio and
+preserving train/test speaker disjointness:
+
+```bash
+python build_dataset_splits.py \
+  --wav_root /home/lqh/datasets/momo_5000h/audio \
+  --speaker_id_regex '^(?P<speaker_id>.+)_[^_]+$' \
+  --num_train_audio 300000 \
+  --num_test_audio 50000 \
+  --sample_strategy balanced \
+  --min_files_per_speaker 1 \
+  --extend_from splits/momo_5000h_30k_5k \
+  --out_dir splits/momo_5000h_300k_50k \
+  --seed 1234 \
+  --overwrite
+```
+
+When preparing the extended set, reuse the same cache directory and rebuild
+speaker centroids so they include the newly added utterance embeddings:
+
+```bash
+python prepare_student_dataset.py \
+  --input_manifest splits/momo_5000h_300k_50k/train_audio.jsonl \
+  --out_root train_data/momo_5000h_cache \
+  --out_manifest train_data/momo_5000h_300k_train.jsonl \
+  --chunk_size 50 \
+  --chunk_hop 50 \
+  --min_chunk_len 25 \
+  --chunk_storage indexed \
+  --rebuild_speaker_embeddings \
+  --skip_existing
+```
+
 Then build train features:
 
 ```bash

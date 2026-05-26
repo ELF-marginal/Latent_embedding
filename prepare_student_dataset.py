@@ -394,6 +394,7 @@ def main():
     parser.add_argument("--teacher_device", default="", help="Defaults to --device. Use 'cpu' if ModelScope rejects cuda.")
     parser.add_argument("--teacher_dim", type=int, default=512)
     parser.add_argument("--show_modelscope_warnings", action="store_true", help="Show ModelScope warnings such as sample-rate resampling messages.")
+    parser.add_argument("--rebuild_speaker_embeddings", action="store_true", help="Recompute speaker centroid embeddings even when files already exist.")
     parser.add_argument("--skip_existing", action="store_true")
     parser.add_argument("--no_teacher", action="store_true", help="Only create audio_feats; useful for debugging AudioVAE.")
     args = parser.parse_args()
@@ -490,7 +491,7 @@ def main():
 
         for speaker_id, embeddings in tqdm(speaker_to_utt_embs.items(), desc="Building speaker centroids"):
             spk_emb_path = spk_emb_dir / f"{safe_name(speaker_id)}.npy"
-            if args.skip_existing and spk_emb_path.exists():
+            if args.skip_existing and spk_emb_path.exists() and not args.rebuild_speaker_embeddings:
                 speaker_emb = normalize_embedding(np.load(spk_emb_path))
             else:
                 stacked = np.stack([normalize_embedding(emb) for emb in embeddings], axis=0)
