@@ -36,6 +36,30 @@ def load_audio_feats(path: Path) -> torch.Tensor:
     return feats.contiguous()
 
 
+def load_embedding(value: Any, manifest_dir: Path) -> np.ndarray:
+    if isinstance(value, list):
+        emb = np.asarray(value, dtype=np.float32)
+    else:
+        path = resolve_path(value, manifest_dir)
+        if path.suffix == ".npy":
+            emb = np.load(path).astype(np.float32, copy=False)
+        else:
+            obj: Any = torch.load(path, map_location="cpu", weights_only=False)
+            if isinstance(obj, dict):
+                for key in ("embedding", "teacher_embedding", "spk_embedding"):
+                    if key in obj:
+                        obj = obj[key]
+                        break
+            emb = torch.as_tensor(obj, dtype=torch.float32).numpy()
+    emb = np.squeeze(emb).astype(np.float32, copy=False)
+    if emb.ndim != 1:
+        raise ValueError(f"Expected a 1-D teacher embedding, got shape {emb.shape}")
+    norm = np.linalg.norm(emb)
+    if norm > 0:
+        emb = emb / norm
+    return emb
+
+
 def row_source_path(row: dict[str, Any]) -> str:
     storage = row.get("chunk_storage", "")
     if storage == "indexed":
@@ -61,6 +85,7 @@ def main():
     parser.add_argument("--out_manifest", required=True)
     parser.add_argument("--shard_size_gb", type=float, default=2.0)
     parser.add_argument("--dtype", choices=["float32", "float16"], default="float32")
+    parser.add_argument("--pack_embeddings", action="store_true", help="Pack per-row teacher embeddings into one contiguous .npy matrix.")
     args = parser.parse_args()
 
     manifest = Path(args.manifest)
@@ -74,14 +99,15 @@ def main():
     if not rows:
         raise RuntimeError(f"No rows found in {manifest}")
 
-    source_values = []
+    source_pairs = []
     seen = set()
     for row in rows:
         source = row_source_path(row)
         key = str(resolve_path(source, manifest_dir))
         if key not in seen:
             seen.add(key)
-            source_values.append(source)
+            source_pairs.append((key, source))
+    source_pairs.sort(key=lambda pair: pair[0])
 
     dtype = np.float16 if args.dtype == "float16" else np.float32
     dtype_size = np.dtype(dtype).itemsize
@@ -113,7 +139,7 @@ def main():
         shard_bytes = 0
         shard_id += 1
 
-    for source in tqdm(source_values, desc="packing audio_feats"):
+    for _, source in tqdm(source_pairs, desc="packing audio_feats"):
         source_path = resolve_path(source, manifest_dir)
         key = str(source_path)
         feats = load_audio_feats(source_path)
@@ -129,8 +155,22 @@ def main():
         shard_bytes += nbytes
     flush_shard()
 
+    packed_embeddings_path = None
+    if args.pack_embeddings:
+        embeddings = []
+        for row in tqdm(rows, desc="packing teacher embeddings"):
+            embeddings.append(load_embedding(row["teacher_embedding"], manifest_dir))
+        embedding_matrix = np.stack(embeddings, axis=0).astype(np.float32, copy=False)
+        packed_embeddings_path = out_manifest.parent / "teacher_embeddings.npy"
+        packed_embeddings_path.parent.mkdir(parents=True, exist_ok=True)
+        np.save(packed_embeddings_path, embedding_matrix)
+        print(
+            f"[pack] wrote {packed_embeddings_path} shape={tuple(embedding_matrix.shape)} "
+            f"size={embedding_matrix.nbytes / 1024**3:.2f}GB"
+        )
+
     with out_manifest.open("w", encoding="utf-8") as writer:
-        for row in rows:
+        for row_idx, row in enumerate(rows):
             packed_row = dict(row)
             source = row_source_path(row)
             source_path = resolve_path(source, manifest_dir)
@@ -145,10 +185,14 @@ def main():
                 packed_row["chunk_start"] = 0
                 packed_row["chunk_end"] = length
             packed_row["chunk_storage"] = "packed"
+            if packed_embeddings_path is not None:
+                packed_row["original_teacher_embedding"] = row["teacher_embedding"]
+                packed_row["teacher_embedding"] = make_relative(packed_embeddings_path, out_manifest.parent)
+                packed_row["teacher_embedding_index"] = int(row_idx)
             writer.write(json.dumps(packed_row, ensure_ascii=False) + "\n")
 
     print(f"[pack] wrote packed manifest: {out_manifest}")
-    print(f"[pack] shards={shard_id} unique_sources={len(source_values)} rows={len(rows)}")
+    print(f"[pack] shards={shard_id} unique_sources={len(source_pairs)} rows={len(rows)}")
 
 
 if __name__ == "__main__":

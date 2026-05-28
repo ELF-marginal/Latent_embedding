@@ -209,7 +209,8 @@ python pack_audio_feats_shards.py \
   --manifest train_data/momo_5000h_train.jsonl \
   --out_dir train_data/momo_5000h_packed/audio_feats_shards \
   --out_manifest train_data/momo_5000h_packed_train.jsonl \
-  --shard_size_gb 2
+  --shard_size_gb 8 \
+  --pack_embeddings
 ```
 
 Then train from the packed manifest:
@@ -221,7 +222,9 @@ python train_latent_speaker.py \
   --group_by_utterance \
   --sequential_io \
   --num_workers 0 \
-  --feat_cache_max_gb 8
+  --preload_feats_gb 220 \
+  --feat_cache_max_gb 220 \
+  --preload_embeddings
 ```
 
 And build test features:

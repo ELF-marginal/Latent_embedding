@@ -17,9 +17,9 @@ def _resolve_path(path: str | Path, manifest_dir: Path) -> Path:
     return p if p.is_absolute() else manifest_dir / p
 
 
-def _load_audio_feats(path: Path) -> torch.Tensor:
+def _load_audio_feats(path: Path, materialize: bool = False) -> torch.Tensor:
     if path.suffix == ".npy":
-        array = np.load(path, mmap_mode="r")
+        array = np.load(path) if materialize else np.load(path, mmap_mode="r")
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="The given NumPy array is not writable")
             feats = torch.from_numpy(array)
@@ -63,6 +63,18 @@ def _load_embedding(value: Any, manifest_dir: Path) -> torch.Tensor:
     return torch.as_tensor(obj, dtype=torch.float32)
 
 
+def _load_embedding_matrix(path: Path) -> torch.Tensor:
+    if path.suffix != ".npy":
+        raise ValueError(f"Packed embedding matrix must be a .npy file, got {path}")
+    array = np.load(path, mmap_mode="r")
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="The given NumPy array is not writable")
+        matrix = torch.from_numpy(array).float()
+    if matrix.ndim != 2:
+        raise ValueError(f"{path} must contain [N,D] embeddings, got {tuple(matrix.shape)}")
+    return matrix
+
+
 class LatentSpeakerDataset(Dataset):
     def __init__(
         self,
@@ -85,6 +97,7 @@ class LatentSpeakerDataset(Dataset):
         self._feat_cache: OrderedDict[str, torch.Tensor] = OrderedDict()
         self._feat_cache_bytes = 0
         self._embedding_cache: OrderedDict[str, torch.Tensor] = OrderedDict()
+        self._embedding_matrix_cache: OrderedDict[str, torch.Tensor] = OrderedDict()
 
         self.items = []
         with self.manifest.open("r", encoding="utf-8") as f:
@@ -160,7 +173,7 @@ class LatentSpeakerDataset(Dataset):
                 key = str(path)
                 if key in self._feat_cache:
                     continue
-                feats = _load_audio_feats(path)
+                feats = _load_audio_feats(path, materialize=True)
                 nbytes = _tensor_nbytes(feats)
                 if not preload_all_feats and loaded + nbytes > preload_bytes and loaded > 0:
                     break
@@ -173,6 +186,20 @@ class LatentSpeakerDataset(Dataset):
             )
 
         if preload_embeddings:
+            packed_embedding_paths: set[str] = set()
+            for item in rows:
+                if "teacher_embedding_index" not in item:
+                    continue
+                path = _resolve_path(item["teacher_embedding"], self.manifest_dir)
+                key = str(path)
+                if key not in self._embedding_matrix_cache:
+                    self._embedding_matrix_cache[key] = _load_embedding_matrix(path)
+                packed_embedding_paths.add(key)
+
+            if packed_embedding_paths:
+                print(f"[preload] packed teacher_embedding matrices cached={len(packed_embedding_paths)}")
+                return
+
             seen_embeddings: set[str] = set()
             embedding_values = []
             for item in rows:
@@ -222,6 +249,20 @@ class LatentSpeakerDataset(Dataset):
         emb = _load_embedding(value, self.manifest_dir).flatten()
         return torch.nn.functional.normalize(emb, dim=0)
 
+    def _get_embedding_at(self, value: Any, index: int) -> torch.Tensor:
+        if not isinstance(value, str):
+            raise TypeError("Packed teacher_embedding must be a path")
+        path = _resolve_path(value, self.manifest_dir)
+        key = str(path)
+        if key in self._embedding_matrix_cache:
+            matrix = self._embedding_matrix_cache.pop(key)
+            self._embedding_matrix_cache[key] = matrix
+        else:
+            matrix = _load_embedding_matrix(path)
+            self._embedding_matrix_cache[key] = matrix
+        emb = matrix[int(index)].flatten()
+        return torch.nn.functional.normalize(emb, dim=0)
+
     def __getitem__(self, idx: int):
         item = self.items[idx]
         feats_path = _resolve_path(item["audio_feats"], self.manifest_dir)
@@ -247,7 +288,10 @@ class LatentSpeakerDataset(Dataset):
                 start = 0
             feats = feats[start : start + self.max_len]
 
-        emb = self._get_embedding(item["teacher_embedding"])
+        if "teacher_embedding_index" in item:
+            emb = self._get_embedding_at(item["teacher_embedding"], int(item["teacher_embedding_index"]))
+        else:
+            emb = self._get_embedding(item["teacher_embedding"])
         return {
             "audio_feats": feats,
             "teacher_embedding": emb,
