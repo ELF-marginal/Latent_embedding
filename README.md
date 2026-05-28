@@ -27,6 +27,8 @@ that teacher embedding space.
   AudioVAE `audio_feats` supervised by that speaker centroid.
 - `precompute_audio_feats.py`: converts manifest audio into VoxCPM AudioVAE
   latent patch files.
+- `pack_audio_feats_shards.py`: packs many manifest-referenced latent files into
+  fewer contiguous `.npy` shards to reduce training-time random file IO.
 - `train_latent_speaker.py`: trains the student model from precomputed latents
   and teacher embeddings.
 - `infer_embedding.py`: extracts a student embedding from one latent file.
@@ -198,6 +200,28 @@ python prepare_student_dataset.py \
   --min_chunk_len 25 \
   --chunk_storage indexed \
   --skip_existing
+```
+
+If training is IO-bound, pack the generated manifest before training:
+
+```bash
+python pack_audio_feats_shards.py \
+  --manifest train_data/momo_5000h_train.jsonl \
+  --out_dir train_data/momo_5000h_packed/audio_feats_shards \
+  --out_manifest train_data/momo_5000h_packed_train.jsonl \
+  --shard_size_gb 2
+```
+
+Then train from the packed manifest:
+
+```bash
+python train_latent_speaker.py \
+  --config configs/latent_speaker_momo_5000h.json \
+  --train_manifest train_data/momo_5000h_packed_train.jsonl \
+  --group_by_utterance \
+  --sequential_io \
+  --num_workers 0 \
+  --feat_cache_max_gb 8
 ```
 
 And build test features:

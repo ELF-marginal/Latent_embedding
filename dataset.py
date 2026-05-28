@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import warnings
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,15 @@ def _resolve_path(path: str | Path, manifest_dir: Path) -> Path:
 
 
 def _load_audio_feats(path: Path) -> torch.Tensor:
+    if path.suffix == ".npy":
+        array = np.load(path, mmap_mode="r")
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="The given NumPy array is not writable")
+            feats = torch.from_numpy(array)
+        if feats.ndim != 3:
+            raise ValueError(f"{path} must contain [T,P,D] audio feats, got {tuple(feats.shape)}")
+        return feats
+
     obj: Any = torch.load(path, map_location="cpu", weights_only=False)
     if isinstance(obj, dict):
         if "audio_feats" not in obj:
@@ -115,6 +125,7 @@ class LatentSpeakerDataset(Dataset):
     def preload_caches(
         self,
         preload_feats_gb: float = 0.0,
+        preload_all_feats: bool = False,
         preload_embeddings: bool = False,
         sort_by_path: bool = True,
     ) -> None:
@@ -127,12 +138,14 @@ class LatentSpeakerDataset(Dataset):
         """
 
         preload_bytes = max(0, int(float(preload_feats_gb) * 1024**3))
-        if preload_bytes > 0 and self.feat_cache_max_bytes <= 0:
+        if preload_all_feats:
+            self.feat_cache_max_bytes = 0
+        elif preload_bytes > 0 and self.feat_cache_max_bytes <= 0:
             self.feat_cache_max_bytes = preload_bytes
 
         rows = sorted(self.items, key=lambda item: str(item.get("audio_feats", ""))) if sort_by_path else list(self.items)
 
-        if preload_bytes > 0:
+        if preload_all_feats or preload_bytes > 0:
             seen_feats: set[str] = set()
             feat_paths = []
             for item in rows:
@@ -149,7 +162,7 @@ class LatentSpeakerDataset(Dataset):
                     continue
                 feats = _load_audio_feats(path)
                 nbytes = _tensor_nbytes(feats)
-                if loaded + nbytes > preload_bytes and loaded > 0:
+                if not preload_all_feats and loaded + nbytes > preload_bytes and loaded > 0:
                     break
                 self._put_audio_feats(key, feats)
                 loaded += nbytes
@@ -213,6 +226,11 @@ class LatentSpeakerDataset(Dataset):
         item = self.items[idx]
         feats_path = _resolve_path(item["audio_feats"], self.manifest_dir)
         feats = self._get_audio_feats(feats_path)
+
+        if "packed_feat_start" in item and "packed_feat_end" in item:
+            start = int(item["packed_feat_start"])
+            end = int(item["packed_feat_end"])
+            feats = feats[start:end]
 
         if "chunk_start" in item and "chunk_end" in item:
             start = int(item["chunk_start"])

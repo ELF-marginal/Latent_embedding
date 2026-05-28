@@ -44,7 +44,10 @@ class UtteranceGroupedBatchSampler(Sampler[list[int]]):
             utterance_id = item.get("utterance_id") or item.get("id") or str(idx)
             utterance_id = str(utterance_id)
             grouped[utterance_id].append(idx)
-            sort_keys.setdefault(utterance_id, str(item.get("audio_feats", "")))
+            sort_keys.setdefault(
+                utterance_id,
+                (str(item.get("audio_feats", "")), int(item.get("packed_feat_start", item.get("chunk_start", 0)))),
+            )
         self.grouped = dict(grouped)
         self.sort_keys = sort_keys
         self.utterance_ids = list(self.grouped)

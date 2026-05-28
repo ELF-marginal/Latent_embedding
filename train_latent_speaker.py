@@ -120,6 +120,7 @@ def parse_args():
     parser.add_argument("--feat_cache_size", type=int, default=64, help="LRU cache size for full audio_feats tensors in Dataset.")
     parser.add_argument("--feat_cache_max_gb", type=float, default=0.0, help="Maximum RAM used by cached audio_feats; 0 disables byte limit.")
     parser.add_argument("--preload_feats_gb", type=float, default=0.0, help="Sequentially preload audio_feats into RAM up to this many GB before training.")
+    parser.add_argument("--preload_all_feats", action="store_true", help="Sequentially preload every unique audio_feats file in the training manifest.")
     parser.add_argument("--preload_embeddings", action="store_true", help="Preload teacher embeddings into RAM before training.")
     parser.add_argument("--embedding_cache_size", type=int, default=4096, help="LRU cache size for teacher embedding tensors in Dataset.")
     parser.add_argument("--group_by_utterance", action="store_true", help="Batch chunks by utterance to improve indexed full-feat cache hits.")
@@ -149,11 +150,38 @@ def main():
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.preload_feats_gb > 0 and args.num_workers > 0:
+    resume_path = None
+    if args.resume:
+        resume_path = save_dir / "latest_train.pt" if args.resume == "latest" else Path(args.resume)
+        if not resume_path.exists():
+            if args.resume == "latest":
+                print(f"[resume] {resume_path} not found; starting a new training run.")
+                resume_path = None
+            else:
+                raise FileNotFoundError(f"Resume checkpoint not found: {resume_path}")
+    elif not args.no_auto_resume and (save_dir / "latest_train.pt").exists():
+        resume_path = save_dir / "latest_train.pt"
+
+    if args.preload_all_feats:
         print(
-            "[warning] --preload_feats_gb with num_workers>0 can duplicate the RAM cache in worker processes. "
-            "For the 32GB in-memory mode, use --num_workers 0 unless you intentionally want per-worker caches."
+            "[preload] full startup audio_feats preload is enabled. "
+            "Every unique feature file in the training manifest will be loaded before epoch 1."
         )
+        if args.num_workers > 0:
+            print(
+                "[warning] --preload_all_feats with num_workers>0 can duplicate the RAM cache in worker processes. "
+                "Use --num_workers 0 for full in-memory training."
+            )
+    elif args.preload_feats_gb > 0:
+        print(
+            f"[preload] startup audio_feats preload is enabled: up to {args.preload_feats_gb:.2f}GB. "
+            "This scans feature files before epoch 1. Set --preload_feats_gb 0 to start training immediately."
+        )
+        if args.num_workers > 0:
+            print(
+                "[warning] --preload_feats_gb with num_workers>0 can duplicate the RAM cache in worker processes. "
+                "For large in-memory mode, use --num_workers 0 unless you intentionally want per-worker caches."
+            )
 
     train_ds = LatentSpeakerDataset(
         args.train_manifest,
@@ -166,6 +194,7 @@ def main():
     )
     train_ds.preload_caches(
         preload_feats_gb=args.preload_feats_gb,
+        preload_all_feats=args.preload_all_feats,
         preload_embeddings=args.preload_embeddings,
         sort_by_path=args.sequential_io,
     )
@@ -207,6 +236,7 @@ def main():
         )
         val_ds.preload_caches(
             preload_feats_gb=0.0,
+            preload_all_feats=False,
             preload_embeddings=args.preload_embeddings,
             sort_by_path=args.sequential_io,
         )
@@ -239,15 +269,7 @@ def main():
     with (save_dir / "config.json").open("w", encoding="utf-8") as f:
         json.dump({"model": asdict(cfg), "train_args": vars(args)}, f, indent=2, ensure_ascii=False)
 
-    resume_path = None
-    if args.resume:
-        resume_path = save_dir / "latest_train.pt" if args.resume == "latest" else Path(args.resume)
-    elif not args.no_auto_resume and (save_dir / "latest_train.pt").exists():
-        resume_path = save_dir / "latest_train.pt"
-
     if resume_path is not None:
-        if not resume_path.exists():
-            raise FileNotFoundError(f"Resume checkpoint not found: {resume_path}")
         state = load_training_checkpoint(resume_path, model, optimizer, device)
         start_epoch = state["epoch"]
         global_step = state["global_step"]
