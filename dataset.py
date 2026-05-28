@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from tqdm import tqdm
 
 
 def _resolve_path(path: str | Path, manifest_dir: Path) -> Path:
@@ -25,6 +26,10 @@ def _load_audio_feats(path: Path) -> torch.Tensor:
     if feats.ndim != 3:
         raise ValueError(f"{path} must contain [T,P,D] audio feats, got {tuple(feats.shape)}")
     return feats
+
+
+def _tensor_nbytes(tensor: torch.Tensor) -> int:
+    return tensor.numel() * tensor.element_size()
 
 
 def _load_embedding(value: Any, manifest_dir: Path) -> torch.Tensor:
@@ -56,6 +61,7 @@ class LatentSpeakerDataset(Dataset):
         max_len: int = 0,
         random_crop: bool = True,
         feat_cache_size: int = 0,
+        feat_cache_max_gb: float = 0.0,
         embedding_cache_size: int = 0,
     ):
         self.manifest = Path(manifest)
@@ -64,8 +70,10 @@ class LatentSpeakerDataset(Dataset):
         self.max_len = int(max_len)
         self.random_crop = bool(random_crop)
         self.feat_cache_size = max(0, int(feat_cache_size))
+        self.feat_cache_max_bytes = max(0, int(float(feat_cache_max_gb) * 1024**3))
         self.embedding_cache_size = max(0, int(embedding_cache_size))
         self._feat_cache: OrderedDict[str, torch.Tensor] = OrderedDict()
+        self._feat_cache_bytes = 0
         self._embedding_cache: OrderedDict[str, torch.Tensor] = OrderedDict()
 
         self.items = []
@@ -80,18 +88,106 @@ class LatentSpeakerDataset(Dataset):
     def __len__(self) -> int:
         return len(self.items)
 
+    def _feat_cache_enabled(self) -> bool:
+        return self.feat_cache_size > 0 or self.feat_cache_max_bytes > 0
+
+    def _put_audio_feats(self, key: str, feats: torch.Tensor) -> None:
+        if not self._feat_cache_enabled():
+            return
+
+        old = self._feat_cache.pop(key, None)
+        if old is not None:
+            self._feat_cache_bytes -= _tensor_nbytes(old)
+
+        self._feat_cache[key] = feats
+        self._feat_cache_bytes += _tensor_nbytes(feats)
+        self._trim_feat_cache()
+
+    def _trim_feat_cache(self) -> None:
+        while self.feat_cache_size > 0 and len(self._feat_cache) > self.feat_cache_size:
+            _, old = self._feat_cache.popitem(last=False)
+            self._feat_cache_bytes -= _tensor_nbytes(old)
+
+        while self.feat_cache_max_bytes > 0 and self._feat_cache_bytes > self.feat_cache_max_bytes and self._feat_cache:
+            _, old = self._feat_cache.popitem(last=False)
+            self._feat_cache_bytes -= _tensor_nbytes(old)
+
+    def preload_caches(
+        self,
+        preload_feats_gb: float = 0.0,
+        preload_embeddings: bool = False,
+        sort_by_path: bool = True,
+    ) -> None:
+        """
+        Warm Dataset caches before DataLoader starts.
+
+        For indexed manifests, many rows point to the same full audio_feats file.
+        Loading unique files once in path order turns the expensive part from
+        repeated random reads into a bounded sequential warmup.
+        """
+
+        preload_bytes = max(0, int(float(preload_feats_gb) * 1024**3))
+        if preload_bytes > 0 and self.feat_cache_max_bytes <= 0:
+            self.feat_cache_max_bytes = preload_bytes
+
+        rows = sorted(self.items, key=lambda item: str(item.get("audio_feats", ""))) if sort_by_path else list(self.items)
+
+        if preload_bytes > 0:
+            seen_feats: set[str] = set()
+            feat_paths = []
+            for item in rows:
+                path = _resolve_path(item["audio_feats"], self.manifest_dir)
+                key = str(path)
+                if key not in seen_feats:
+                    seen_feats.add(key)
+                    feat_paths.append(path)
+
+            loaded = 0
+            for path in tqdm(feat_paths, desc="preloading audio_feats"):
+                key = str(path)
+                if key in self._feat_cache:
+                    continue
+                feats = _load_audio_feats(path)
+                nbytes = _tensor_nbytes(feats)
+                if loaded + nbytes > preload_bytes and loaded > 0:
+                    break
+                self._put_audio_feats(key, feats)
+                loaded += nbytes
+
+            print(
+                f"[preload] audio_feats cached={len(self._feat_cache)} "
+                f"bytes={self._feat_cache_bytes / 1024**3:.2f}GB"
+            )
+
+        if preload_embeddings:
+            seen_embeddings: set[str] = set()
+            embedding_values = []
+            for item in rows:
+                value = item["teacher_embedding"]
+                if not isinstance(value, str):
+                    continue
+                path = _resolve_path(value, self.manifest_dir)
+                key = str(path)
+                if key not in seen_embeddings:
+                    seen_embeddings.add(key)
+                    embedding_values.append(value)
+
+            old_limit = self.embedding_cache_size
+            self.embedding_cache_size = max(self.embedding_cache_size, len(embedding_values))
+            for value in tqdm(embedding_values, desc="preloading teacher embeddings"):
+                self._get_embedding(value)
+            self.embedding_cache_size = max(old_limit, self.embedding_cache_size)
+            print(f"[preload] teacher_embeddings cached={len(self._embedding_cache)}")
+
     def _get_audio_feats(self, path: Path) -> torch.Tensor:
         key = str(path)
-        if self.feat_cache_size > 0 and key in self._feat_cache:
+        if self._feat_cache_enabled() and key in self._feat_cache:
             feats = self._feat_cache.pop(key)
             self._feat_cache[key] = feats
             return feats
 
         feats = _load_audio_feats(path)
-        if self.feat_cache_size > 0:
-            self._feat_cache[key] = feats
-            while len(self._feat_cache) > self.feat_cache_size:
-                self._feat_cache.popitem(last=False)
+        self._put_audio_feats(key, feats)
         return feats
 
     def _get_embedding(self, value: Any) -> torch.Tensor:

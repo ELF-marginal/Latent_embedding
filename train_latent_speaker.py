@@ -118,9 +118,14 @@ def parse_args():
     parser.add_argument("--max_len", type=int, default=0, help="Random crop length in latent T steps; 0 disables crop.")
     parser.add_argument("--min_len", type=int, default=1)
     parser.add_argument("--feat_cache_size", type=int, default=64, help="LRU cache size for full audio_feats tensors in Dataset.")
+    parser.add_argument("--feat_cache_max_gb", type=float, default=0.0, help="Maximum RAM used by cached audio_feats; 0 disables byte limit.")
+    parser.add_argument("--preload_feats_gb", type=float, default=0.0, help="Sequentially preload audio_feats into RAM up to this many GB before training.")
+    parser.add_argument("--preload_embeddings", action="store_true", help="Preload teacher embeddings into RAM before training.")
     parser.add_argument("--embedding_cache_size", type=int, default=4096, help="LRU cache size for teacher embedding tensors in Dataset.")
     parser.add_argument("--group_by_utterance", action="store_true", help="Batch chunks by utterance to improve indexed full-feat cache hits.")
     parser.add_argument("--utterances_per_batch", type=int, default=16)
+    parser.add_argument("--sequential_io", action="store_true", help="Sort utterances by feature path and shuffle path blocks to reduce random disk IO.")
+    parser.add_argument("--io_block_size", type=int, default=2048, help="Number of utterances per shuffled IO block when --sequential_io is enabled.")
     parser.add_argument("--l2_weight", type=float, default=0.1)
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument("--save_every_steps", type=int, default=10000, help="Save a training checkpoint every N steps.")
@@ -144,13 +149,25 @@ def main():
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
+    if args.preload_feats_gb > 0 and args.num_workers > 0:
+        print(
+            "[warning] --preload_feats_gb with num_workers>0 can duplicate the RAM cache in worker processes. "
+            "For the 32GB in-memory mode, use --num_workers 0 unless you intentionally want per-worker caches."
+        )
+
     train_ds = LatentSpeakerDataset(
         args.train_manifest,
         min_len=args.min_len,
         max_len=args.max_len,
         random_crop=True,
         feat_cache_size=args.feat_cache_size,
+        feat_cache_max_gb=args.feat_cache_max_gb,
         embedding_cache_size=args.embedding_cache_size,
+    )
+    train_ds.preload_caches(
+        preload_feats_gb=args.preload_feats_gb,
+        preload_embeddings=args.preload_embeddings,
+        sort_by_path=args.sequential_io,
     )
     train_batch_sampler = None
     if args.group_by_utterance:
@@ -160,6 +177,8 @@ def main():
             utterances_per_batch=args.utterances_per_batch,
             shuffle=True,
             seed=1234,
+            sequential_io=args.sequential_io,
+            io_block_size=args.io_block_size,
         )
     train_loader_kwargs = {
         "num_workers": args.num_workers,
@@ -183,7 +202,13 @@ def main():
             max_len=args.max_len,
             random_crop=False,
             feat_cache_size=args.feat_cache_size,
+            feat_cache_max_gb=args.feat_cache_max_gb,
             embedding_cache_size=args.embedding_cache_size,
+        )
+        val_ds.preload_caches(
+            preload_feats_gb=0.0,
+            preload_embeddings=args.preload_embeddings,
+            sort_by_path=args.sequential_io,
         )
         val_loader = DataLoader(
             val_ds,

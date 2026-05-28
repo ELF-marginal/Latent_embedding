@@ -25,6 +25,8 @@ class UtteranceGroupedBatchSampler(Sampler[list[int]]):
         shuffle: bool = True,
         seed: int = 1234,
         drop_last: bool = False,
+        sequential_io: bool = False,
+        io_block_size: int = 2048,
     ):
         self.items = items
         self.batch_size = int(batch_size)
@@ -32,13 +34,19 @@ class UtteranceGroupedBatchSampler(Sampler[list[int]]):
         self.shuffle = bool(shuffle)
         self.seed = int(seed)
         self.drop_last = bool(drop_last)
+        self.sequential_io = bool(sequential_io)
+        self.io_block_size = max(1, int(io_block_size))
         self.epoch = 0
 
         grouped = defaultdict(list)
+        sort_keys = {}
         for idx, item in enumerate(items):
             utterance_id = item.get("utterance_id") or item.get("id") or str(idx)
-            grouped[str(utterance_id)].append(idx)
+            utterance_id = str(utterance_id)
+            grouped[utterance_id].append(idx)
+            sort_keys.setdefault(utterance_id, str(item.get("audio_feats", "")))
         self.grouped = dict(grouped)
+        self.sort_keys = sort_keys
         self.utterance_ids = list(self.grouped)
 
     def set_epoch(self, epoch: int):
@@ -46,8 +54,18 @@ class UtteranceGroupedBatchSampler(Sampler[list[int]]):
 
     def __iter__(self) -> Iterator[list[int]]:
         rng = random.Random(self.seed + self.epoch)
-        utterance_ids = list(self.utterance_ids)
-        if self.shuffle:
+        if self.sequential_io:
+            utterance_ids = sorted(self.utterance_ids, key=lambda utt: self.sort_keys.get(utt, utt))
+            if self.shuffle:
+                blocks = [
+                    utterance_ids[offset : offset + self.io_block_size]
+                    for offset in range(0, len(utterance_ids), self.io_block_size)
+                ]
+                rng.shuffle(blocks)
+                utterance_ids = [utt for block in blocks for utt in block]
+        else:
+            utterance_ids = list(self.utterance_ids)
+        if self.shuffle and not self.sequential_io:
             rng.shuffle(utterance_ids)
 
         batch = []
@@ -79,4 +97,3 @@ class UtteranceGroupedBatchSampler(Sampler[list[int]]):
         if self.drop_last:
             return len(self.items) // self.batch_size
         return math.ceil(len(self.items) / self.batch_size)
-
