@@ -13,6 +13,7 @@ from tqdm import tqdm
 
 from dataset import LatentSpeakerDataset, collate_latent_speaker
 from models import LatentSpeakerEncoder, LatentSpeakerEncoderConfig, speaker_embedding_loss
+from samplers import UtteranceGroupedBatchSampler
 
 
 def save_training_checkpoint(
@@ -117,6 +118,9 @@ def parse_args():
     parser.add_argument("--max_len", type=int, default=0, help="Random crop length in latent T steps; 0 disables crop.")
     parser.add_argument("--min_len", type=int, default=1)
     parser.add_argument("--feat_cache_size", type=int, default=64, help="LRU cache size for full audio_feats tensors in Dataset.")
+    parser.add_argument("--embedding_cache_size", type=int, default=4096, help="LRU cache size for teacher embedding tensors in Dataset.")
+    parser.add_argument("--group_by_utterance", action="store_true", help="Batch chunks by utterance to improve indexed full-feat cache hits.")
+    parser.add_argument("--utterances_per_batch", type=int, default=16)
     parser.add_argument("--l2_weight", type=float, default=0.1)
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument("--save_every_steps", type=int, default=10000, help="Save a training checkpoint every N steps.")
@@ -146,17 +150,30 @@ def main():
         max_len=args.max_len,
         random_crop=True,
         feat_cache_size=args.feat_cache_size,
+        embedding_cache_size=args.embedding_cache_size,
     )
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        collate_fn=collate_latent_speaker,
-        pin_memory=device.type == "cuda",
-        persistent_workers=args.persistent_workers and args.num_workers > 0,
-        prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
-    )
+    train_batch_sampler = None
+    if args.group_by_utterance:
+        train_batch_sampler = UtteranceGroupedBatchSampler(
+            train_ds.items,
+            batch_size=args.batch_size,
+            utterances_per_batch=args.utterances_per_batch,
+            shuffle=True,
+            seed=1234,
+        )
+    train_loader_kwargs = {
+        "num_workers": args.num_workers,
+        "collate_fn": collate_latent_speaker,
+        "pin_memory": device.type == "cuda",
+        "persistent_workers": args.persistent_workers and args.num_workers > 0,
+        "prefetch_factor": args.prefetch_factor if args.num_workers > 0 else None,
+    }
+    if train_batch_sampler is not None:
+        train_loader_kwargs["batch_sampler"] = train_batch_sampler
+    else:
+        train_loader_kwargs["batch_size"] = args.batch_size
+        train_loader_kwargs["shuffle"] = True
+    train_loader = DataLoader(train_ds, **train_loader_kwargs)
 
     val_loader = None
     if args.val_manifest:
@@ -166,6 +183,7 @@ def main():
             max_len=args.max_len,
             random_crop=False,
             feat_cache_size=args.feat_cache_size,
+            embedding_cache_size=args.embedding_cache_size,
         )
         val_loader = DataLoader(
             val_ds,
@@ -212,6 +230,8 @@ def main():
         print(f"[resume] loaded {resume_path} at epoch={start_epoch}, global_step={global_step}, best_val={best_val:.6f}")
 
     for epoch in range(start_epoch, args.epochs):
+        if train_batch_sampler is not None:
+            train_batch_sampler.set_epoch(epoch)
         model.train()
         progress = tqdm(train_loader, desc=f"epoch {epoch + 1}/{args.epochs}")
         running = []

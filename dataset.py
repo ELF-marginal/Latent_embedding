@@ -56,6 +56,7 @@ class LatentSpeakerDataset(Dataset):
         max_len: int = 0,
         random_crop: bool = True,
         feat_cache_size: int = 0,
+        embedding_cache_size: int = 0,
     ):
         self.manifest = Path(manifest)
         self.manifest_dir = self.manifest.parent
@@ -63,7 +64,9 @@ class LatentSpeakerDataset(Dataset):
         self.max_len = int(max_len)
         self.random_crop = bool(random_crop)
         self.feat_cache_size = max(0, int(feat_cache_size))
+        self.embedding_cache_size = max(0, int(embedding_cache_size))
         self._feat_cache: OrderedDict[str, torch.Tensor] = OrderedDict()
+        self._embedding_cache: OrderedDict[str, torch.Tensor] = OrderedDict()
 
         self.items = []
         with self.manifest.open("r", encoding="utf-8") as f:
@@ -91,6 +94,25 @@ class LatentSpeakerDataset(Dataset):
                 self._feat_cache.popitem(last=False)
         return feats
 
+    def _get_embedding(self, value: Any) -> torch.Tensor:
+        if isinstance(value, str):
+            path = _resolve_path(value, self.manifest_dir)
+            key = str(path)
+            if self.embedding_cache_size > 0 and key in self._embedding_cache:
+                emb = self._embedding_cache.pop(key)
+                self._embedding_cache[key] = emb
+                return emb
+            emb = _load_embedding(value, self.manifest_dir).flatten()
+            emb = torch.nn.functional.normalize(emb, dim=0)
+            if self.embedding_cache_size > 0:
+                self._embedding_cache[key] = emb
+                while len(self._embedding_cache) > self.embedding_cache_size:
+                    self._embedding_cache.popitem(last=False)
+            return emb
+
+        emb = _load_embedding(value, self.manifest_dir).flatten()
+        return torch.nn.functional.normalize(emb, dim=0)
+
     def __getitem__(self, idx: int):
         item = self.items[idx]
         feats_path = _resolve_path(item["audio_feats"], self.manifest_dir)
@@ -111,8 +133,7 @@ class LatentSpeakerDataset(Dataset):
                 start = 0
             feats = feats[start : start + self.max_len]
 
-        emb = _load_embedding(item["teacher_embedding"], self.manifest_dir).flatten()
-        emb = torch.nn.functional.normalize(emb, dim=0)
+        emb = self._get_embedding(item["teacher_embedding"])
         return {
             "audio_feats": feats,
             "teacher_embedding": emb,
